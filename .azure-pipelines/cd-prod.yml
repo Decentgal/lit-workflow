@@ -24,7 +24,7 @@ trigger:
 pr: none
 
 pool:
-  name: Default
+  vmImage: "ubuntu-latest"
 
 variables:
   - group: wogo-global-vars
@@ -47,10 +47,9 @@ stages:
     displayName: "Strict Bandit + Trivy + Checkov"
     steps:
 
-    - script: |
-        python --version
-        pip --version
-      displayName: "Verify Python installation"
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
 
     - script: |
         pip install bandit[toml] checkov
