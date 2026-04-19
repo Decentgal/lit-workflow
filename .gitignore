@@ -15,10 +15,16 @@ venv/
 env/
 
 # Terraform 
+# Terraform
 terraform/.terraform/
-terraform/.terraform.lock.hcl
+terraform/**/.terraform/
+terraform/application/.terraform/
+terraform/platform/.terraform/
+terraform/**/.terraform.lock.hcl
 terraform/*.tfstate
+terraform/**/*.tfstate
 terraform/*.tfstate.backup
+terraform/**/*.tfstate.backup
 terraform/**/*.tfvars
 !terraform/**/terraform.tfvars.example   # the placeholder for any collaborator/cloner
 
@@ -36,3 +42,7 @@ Thumbs.db
 
 # Docker
 *.log
+
+# Images
+*.png
+*.jpg
