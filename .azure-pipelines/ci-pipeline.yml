@@ -17,7 +17,7 @@ pr:
       - main
 
 pool:
-  vmImage: "ubuntu-latest"
+  name: Default
 
 variables:
   - group: wogo-global-vars
