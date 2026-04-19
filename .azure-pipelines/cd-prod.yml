@@ -47,9 +47,10 @@ stages:
     displayName: "Strict Bandit + Trivy + Checkov"
     steps:
 
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: $(PYTHON_VERSION)
+    - script: |
+        python --version
+        pip --version
+      displayName: "Verify Python installation"
 
     - script: |
         pip install bandit[toml] checkov

@@ -41,9 +41,10 @@ stages:
     displayName: "Bandit + Trivy + Checkov"
     steps:
 
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: $(PYTHON_VERSION)
+    - script: |
+        python --version
+        pip --version
+      displayName: "Verify Python installation"
 
     - script: |
         pip install bandit[toml] checkov
@@ -200,7 +201,7 @@ stages:
 # Only runs after the app is deployed and running.
 
 - stage: DAST
-  displayName: "🕷️ DAST — OWASP ZAP"
+  displayName: "DAST — OWASP ZAP"
   dependsOn: DeployDev
   jobs:
   - job: OWASPZapScan

@@ -39,10 +39,10 @@ stages:
     displayName: "Bandit Python Security Scan"
     steps:
 
-    - task: UsePythonVersion@0
-      displayName: "Set Python $(PYTHON_VERSION)"
-      inputs:
-        versionSpec: $(PYTHON_VERSION)
+    - script: |
+        python --version
+        pip --version
+      displayName: "Verify Python installation"
 
     - script: |
         pip install bandit[toml]
@@ -140,9 +140,10 @@ stages:
     displayName: "Checkov IaC Security Scan"
     steps:
 
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: $(PYTHON_VERSION)
+    - script: |
+        python --version
+        pip --version
+      displayName: "Verify Python installation"
 
     - script: |
         pip install checkov
@@ -188,9 +189,10 @@ stages:
     displayName: "Run Unit Tests with Coverage"
     steps:
 
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: $(PYTHON_VERSION)
+    - script: |
+        python --version
+        pip --version
+      displayName: "Verify Python installation"
 
     - script: |
         pip install -r requirements.txt
