@@ -1,0 +1,289 @@
+# This CI pipeline runs on every Pull Request to dev or main like a QA test.
+# Nothing merges unless all 5 stages pass.
+
+# Stages:
+#   1. SAST: Bandit is used here to scan Python code for security issues.
+#   2. SCA:  Trivy is used here to scan dependencies for known vulnerabilities.
+#   3. IaC:  Checkov is used here to scan Terraform files for misconfigurations.
+#   4. Tests: Pytest runs all unit tests
+#   5. Build: Docker image is built and scanned by Trivy
+
+trigger: none   # This pipeline runs only on PRs, not direct push.
+
+pr:
+  branches:
+    include:
+      - dev
+      - main
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - group: wogo-global-vars
+  - name: PYTHON_VERSION
+    value: "3.11"
+  - name: IMAGE_TAG
+    value: "pr-$(System.PullRequest.PullRequestId)-$(Build.BuildId)"
+
+
+stages:
+
+# STAGE 1: SAST (Static Application Security Testing) using Bandit
+# Reads the Python code without running it. Bandit identifies hardcoded passwords, SQL injection risks, etc.
+
+- stage: SAST
+  displayName: "SAST - Bandit"
+  jobs:
+  - job: BanditScan
+    displayName: "Bandit Python Security Scan"
+    steps:
+
+    - task: UsePythonVersion@0
+      displayName: "Set Python $(PYTHON_VERSION)"
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
+
+    - script: |
+        pip install bandit[toml]
+        mkdir -p reports/sast
+
+        echo "========================================"
+        echo " Running Bandit SAST Scan"
+        echo "========================================"
+
+        # Run Bandit and save results as JSON (for the artifact)
+        bandit -r app/ \
+          --severity-level medium \
+          --format json \
+          --output reports/sast/bandit-report.json \
+          --exit-zero
+
+        # Run Bandit again for human-readable output in the pipeline logs
+        bandit -r app/ \
+          --severity-level medium \
+          --format txt
+
+        echo "Bandit scan complete. Report saved to reports/sast/"
+      displayName: "Run Bandit SAST"
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish SAST Report"
+      condition: always()   # Publish even if the scan found issues
+      inputs:
+        pathToPublish: "reports/sast"
+        artifactName: "bandit-sast-report"
+
+
+# STAGE 2: SCA (Software Composition Analysis) using Trivy (filesystem mode)
+# Checks the requirements.txt and project files against CVEs.
+
+- stage: SCA
+  displayName: "SCA - Trivy Filesystem"
+  dependsOn: SAST
+  jobs:
+  - job: TrivyFsScan
+    displayName: "Trivy Dependency Scan"
+    steps:
+
+    - script: |
+        # Install Trivy from the official repo
+        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main" \
+          | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update && sudo apt-get install -y trivy
+        trivy --version
+      displayName: "Install Trivy"
+
+    - script: |
+        mkdir -p reports/sca
+
+        echo "========================================"
+        echo " Running Trivy Filesystem SCA Scan"
+        echo "========================================"
+
+        # Save JSON report as artifact
+        trivy fs . \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --format json \
+          --output reports/sca/trivy-fs-report.json \
+          --exit-code 0
+
+        # Human-readable output for the pipeline logs
+        trivy fs . \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --format table
+
+        echo "Trivy filesystem scan complete."
+      displayName: "Run Trivy SCA"
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish SCA Report"
+      condition: always()
+      inputs:
+        pathToPublish: "reports/sca"
+        artifactName: "trivy-sca-report"
+
+
+# STAGE 3: IaC security scan using Checkov
+# Reads all Terraform files and checks for misconfigurations, e.g. storage accounts open to the internet, unencrypted data, etc.
+- stage: IaC
+  displayName: "IaC — Checkov Terraform"
+  dependsOn: SCA
+  jobs:
+  - job: CheckovScan
+    displayName: "Checkov IaC Security Scan"
+    steps:
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
+
+    - script: |
+        pip install checkov
+        mkdir -p reports/iac
+
+        echo "========================================"
+        echo " Running Checkov IaC Scan"
+        echo "========================================"
+
+        # Scan terraform folder and output JSON report
+        checkov \
+          --directory terraform/ \
+          --framework terraform \
+          --output json \
+          --output-file-path reports/iac/ \
+          --soft-fail   # Reports findings without failing the build at this stage
+
+        # Also show results in the pipeline logs
+        checkov \
+          --directory terraform/ \
+          --framework terraform \
+          --compact
+
+        echo "Checkov scan complete."
+      displayName: "Run Checkov IaC Scan"
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish IaC Report"
+      condition: always()
+      inputs:
+        pathToPublish: "reports/iac"
+        artifactName: "checkov-iac-report"
+
+
+# STAGE 4: Unit Tests using Pytest
+# Runs every test in the tests/ folder and measures code coverage. The pipeline fails if any test fails.
+
+- stage: UnitTests
+  displayName: "Unit Tests - Pytest"
+  dependsOn: IaC
+  jobs:
+  - job: RunPytest
+    displayName: "Run Unit Tests with Coverage"
+    steps:
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
+
+    - script: |
+        pip install -r requirements.txt
+        mkdir -p reports/tests
+
+        echo "========================================"
+        echo " Running Pytest Unit Tests"
+        echo "========================================"
+
+        pytest tests/ \
+          --junitxml=reports/tests/test-results.xml \
+          --cov=app \
+          --cov-report=xml:reports/tests/coverage.xml \
+          --cov-report=html:reports/tests/htmlcov \
+          -v
+
+        echo "Tests complete."
+      displayName: "Run Pytest"
+
+    - task: PublishTestResults@2
+      displayName: "Publish Test Results"
+      condition: always()
+      inputs:
+        testResultsFormat: "JUnit"
+        testResultsFiles: "reports/tests/test-results.xml"
+        testRunTitle: "WOGO Unit Tests — PR #$(System.PullRequest.PullRequestId)"
+
+    - task: PublishCodeCoverageResults@1
+      displayName: "Publish Coverage Report"
+      condition: always()
+      inputs:
+        codeCoverageTool: "Cobertura"
+        summaryFileLocation: "reports/tests/coverage.xml"
+        reportDirectory: "reports/tests/htmlcov"
+
+
+# STAGE 5: Build Docker Image + SCA tool: Trivy Container Scan
+# This builds the Docker image and then scans the image itself for vulnerabilities, not just the packages.
+
+- stage: Build
+  displayName: "Build - Docker Image"
+  dependsOn: UnitTests
+  jobs:
+  - job: BuildAndScan
+    displayName: "Build Docker Image and Scan"
+    steps:
+
+    - task: Docker@2
+      displayName: "Build Docker Image"
+      inputs:
+        containerRegistry: "acr-wogo"
+        repository: "wogo"
+        command: "build"
+        Dockerfile: "Dockerfile"
+        tags: $(IMAGE_TAG)
+        arguments: "--no-cache"
+
+    - script: |
+        # Install Trivy
+        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main" \
+          | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update && sudo apt-get install -y trivy
+
+        mkdir -p reports/container-scan
+
+        echo "========================================"
+        echo " Running Trivy Container Image Scan"
+        echo "========================================"
+
+        # Scan the local tag
+        trivy image \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --format json \
+          --output reports/container-scan/trivy-image-report.json \
+          --exit-code 0 \
+          wogo:$(IMAGE_TAG)
+
+        # Table output for logs
+        trivy image \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --format table \
+          wogo:$(IMAGE_TAG)
+      displayName: "Trivy Container Image Scan"
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish Container Scan Report"
+      condition: always()
+      inputs:
+        pathToPublish: "reports/container-scan"
+        artifactName: "trivy-container-report"
