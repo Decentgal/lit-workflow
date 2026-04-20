@@ -1,6 +1,11 @@
 # This is the second half of the decoupled architecture. 
 # This APPLICATION layer is owned and managed by the development team. They create the App Service, ACR, and Key Vault.
 
+# Data Source
+data "http" "my_public_ip" {
+  url = "https://ifconfig.me/ip"
+}
+
 # Dynamically fetches your Tenant ID without needing variables.
 data "azurerm_client_config" "current" {}
 
@@ -70,6 +75,7 @@ resource "azurerm_linux_web_app" "dev" {
 }
 
 # App Service: Prod 
+# checkov:skip=CKV_AZURE_88: Stateless API does not require persistent Azure Files storage
 resource "azurerm_linux_web_app" "prod" {
   name                = "wogo-prod-app-${random_integer.suffix.result}"
   resource_group_name = data.terraform_remote_state.platform.outputs.prod_resource_group_name
@@ -104,13 +110,24 @@ resource "azurerm_linux_web_app" "prod" {
 
 # Key Vault 
 resource "azurerm_key_vault" "main" {
-  name                       = "wogo-kv-${random_integer.suffix.result}"
-  resource_group_name        = data.terraform_remote_state.platform.outputs.dev_resource_group_name
-  location                   = var.location
-  tenant_id                  = data.azurerm_client_config.current.tenant_id  
-  sku_name                   = "standard"
-  purge_protection_enabled   = false
-  soft_delete_retention_days = 7
+  name                        = "wogo-kv-${random_integer.suffix.result}"
+  resource_group_name         = data.terraform_remote_state.platform.outputs.dev_resource_group_name
+  location                    = var.location
+  tenant_id                   = data.azurerm_client_config.current.tenant_id  
+  sku_name                    = "standard"
+  
+  # FIX: Enable Purge Protection and Soft Delete (CKV_AZURE_110 & CKV_AZURE_42)
+  purge_protection_enabled    = true
+  soft_delete_retention_days  = 7
+
+  # Network Security (CKV_AZURE_189 & CKV_AZURE_109)
+  # This restricts access to specific Azure services or IPs
+  network_acls {
+    bypass         = "AzureServices"
+    default_action = "Deny" 
+    # Add your local IP here if you need to access it from your laptop:
+    ip_rules     = [data.http.my_public_ip.response_body] 
+  }
 }
 
 # MONITORING & OBSERVABILITY TOOLS
