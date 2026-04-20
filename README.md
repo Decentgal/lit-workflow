@@ -11,7 +11,7 @@ This project follows strict separation of duties, Zero-Trust OIDC authentication
 **(A 5-minutes read, walk with me. Let's go!)**
 
 
-### Prerequisites
+### Prerequisites:
 
 Install these before anything else:
 
@@ -21,6 +21,7 @@ Install these before anything else:
 4. Terraform (to create cloud infrastructure)
 5. Docker Desktop  (Build and test containers locally)
 6. Python 3.11+ (to run the FastAPI app locally)
+
 
 
 **Using the VS Code, verify everything works:**
@@ -33,9 +34,10 @@ python --version
 ```
 
 
-**Before touching a single file, understand the full journey:**
+### **Before touching a single file or code on VS Code, understand the full journey:**
 
 You write code in your VS Code Editor
+
        ↓
 
 Push to your feature branch on GitHub
@@ -88,13 +90,13 @@ Azure Pipeline no.4 triggers: Deploys to PRODUCTION and your application is now 
   - **OWASP ZAP (DAST):** Attacks the live deployed application to test for runtime exploits (injection, auth bypass, XSS, ect).
 
 
-### Cloud Budget
+### Cloud Budget:
 
 Before you spin up anything on the cloud, analyze the financial implication associated with each resource or service first.
 ![alt text](image-2.png)
 
 
-### Architectural Diagram
+### Architectural Diagram:
 
 This project is named **WOGO** and was built in the **lit-workflow** directory containing the Application codes, Test code, Root/Config files, Terraform, Azure pipelines.
 
@@ -104,9 +106,9 @@ This project is named **WOGO** and was built in the **lit-workflow** directory c
 
 
 
-### Architecture & Pipeline Flow
+### Architecture & Pipeline Flow:
 
-I followed a strict DevOps culture:
+WOGO project follows a strict DevOps culture.
 
 1. Infrastructure is provisioned once with Terraform. 
 
@@ -119,7 +121,8 @@ I followed a strict DevOps culture:
 5. **CD Prod (Merge to Main):** Triggers `cd-prod.yml`and runs strict security gates (fails on HIGH), builds the prod image, waits for **Manual Approval** within 1 hour, deploys to Prod, and runs a final ZAP verification.
 
 
-**Branch-strategy**
+
+### **Branch Strategy:**
 
 main    → production (protected, requires PR + approval)
 
@@ -127,10 +130,12 @@ dev     → staging (protected, requires PR + status checks)
 
 feature → where all work happens (temporary, deleted after merge)
 
+
 **The security scanners are stricter in production than in dev. A HIGH-severity finding that is reported in dev will block a production deployment entirely.*
 
 
-### Environment URLs
+
+### Environment URLs:
 
 **Development:** `https://wogo-dev-app-XXXX.azurewebsites.net` triggers merge to dev
 
@@ -139,13 +144,14 @@ feature → where all work happens (temporary, deleted after merge)
 **Monitoring Dashboard:** Azure Portal → Application Insights → wogo-appinsights triggers is always on.
 
 
-### INFRASTRUCTURE SETUP VIA TERRAFORM
 
-**Authenticate to Azure**
+### INFRASTRUCTURE SETUP VIA TERRAFORM:
 
-az login
+1. **Authenticate to Azure**
 
-**Platform Layer** (creates Resource Groups & Azure Policy)
+`az login`
+
+2. **Platform Layer** (creates Resource Groups & Azure Policy)
 
 `cd terraform/platform`
 
@@ -153,7 +159,7 @@ az login
 
 `terraform init && terraform apply`
 
-**Application Layer** (creates ACR, App Service, Key Vault, Monitoring)
+3. **Application Layer** (creates ACR, App Service, Key Vault, Monitoring)
 
 `cd terraform/application`
 
@@ -164,7 +170,8 @@ az login
 That's it. End of infrastructure creation with Terraform.
 
 
-### AZURE DEVOPS SETUP
+
+### AZURE DEVOPS SETUP:
 
 To connect your new infrastructure to become automated pipelines, do these:
 
@@ -176,10 +183,12 @@ To connect your new infrastructure to become automated pipelines, do these:
 
 EASY. THAT'S ALL.
 
+
 **Note:** **No one commits directly to main or dev. All changes flow through Pull Requests.*
 
 
-### API Endpoints
+
+### API Endpoints:
 
 `GET /` - API Status (Root confirms the API is running)
 
@@ -190,7 +199,8 @@ EASY. THAT'S ALL.
 `GET /openAPI.json` (OpenAPI schema consumed by OWASP ZAP for DAST)
 
 
-### Monitoring and Observability
+
+### Monitoring and Observability:
 
 Azure Application Insights connects to both App Services automatically via an environment variable injected by Terraform. Once traffic hits the app, the dashboard shows:
 
@@ -201,12 +211,14 @@ Azure Application Insights connects to both App Services automatically via an en
 An Azure Monitor alert sends an email notification if production returns more than 5 HTTP 500 errors within 5 minutes which is the foundation of 99% uptime management.
 
 
-### Open ID Connect (OIDC) - Zero-Trust Authentication
+
+### Open ID Connect (OIDC) - Zero-Trust Authentication:
 
 No client secrets are stored anywhere. Azure Pipelines uses Workload Identity Federation to prove its own identity to Azure and receive a short-lived token on every pipeline run. The Service Principal identity exists while the password does not.
 
 
-### Local development on your machine
+
+### Local development on your machine:
 ```bash
 # Clone and setup virtual environment
 git clone [https://github.com/YOUR_USERNAME/lit-workflow.git](https://github.com/YOUR_USERNAME/lit-workflow.git)
@@ -224,30 +236,44 @@ pytest tests/ -v
 # Run security scans locally 
 bandit -r app/ --severity-level medium 
 checkov --directory terraform/ --framework terraform
-
-CONGRATULATIONS!
-
-# To destroy everything once completed on the cloud:
-# Delete the application layer first.
-cd terraform/application
-terraform destroy -var="environment=dev"
-
-# Next, delete the platform layer.
-cd ../platform
-terraform destroy -var="environment=dev"
-
-#  Delete the Backend State File Storage (Optionl)
-az group delete --name wogo-tfstate-rg --yes --no-wait 
-
-# To prevent cloud cost billing if you do not wish to destroy your infrastructure, stop the Azure App Services on both environments.
-
-# Stop the FastAPI container from running so the website do not load any Application Insights telemetry from being sent.
-az webapp stop --name wogo-dev-app-XXXX --resource-group wogo-dev-rg
-
-# Alternatively, scale down on the Azure portal.
-
-# Go to App Service Plan (wogo-dev-asp)  → click Scale up (App Service plan) on the left menu  → change the pricing tier from B1 to F1 (Free) and finally, click Apply.
 ```
+
+
+That's a big win, CONGRATULATIONS!
+
+
+### To destroy everything once you've successfully completed on the cloud:
+
+1. Delete the application layer first.
+
+`cd terraform/application`
+
+`terraform destroy -var="environment=dev"`
+
+2. Delete the platform layer.
+
+`cd ../platform`
+
+`terraform destroy -var="environment=dev"`
+
+
+3. Delete the Backend State File Storage (Optionl)
+
+`az group delete --name wogo-tfstate-rg --yes --no-wait`
+
+
+### To prevent cloud cost billing if you do not wish to destroy your infrastructure, stop the Azure App Services on both environments:
+
+1. Stop the FastAPI container from running so the website do not load any Application Insights telemetry from being sent.
+
+`az webapp stop --name wogo-dev-app-XXXX --resource-group wogo-dev-rg`
+
+
+2.  Alternatively, scale down on the Azure portal.
+
+Go to App Service Plan (wogo-dev-asp)  → click Scale up (App Service plan) on the left menu  → change the pricing tier from B1 to F1 (Free) and finally, click Apply.
+
+
 
 ## KEY TAKEAWAYS:
 
@@ -257,7 +283,7 @@ You'd likely face some restrictions on role assignments (Resource Policy Contrib
 
 **Solution:** Manually assign it or do so via the Azure portal.
 
-**In a Pay-As-You-Go subscription account, there are no limitations.
+**In a Pay-As-You-Go subscription account, there are no limitations.**
 
 
 
