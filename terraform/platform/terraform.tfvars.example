@@ -1,0 +1,10 @@
+# Azure Authentication 
+# OIDC handles the Client ID, Client Secret, and Tenant ID in the pipeline.
+# To run Terraform locally on your PC when you clone this repo, you only need to provide your Azure Subscription ID.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+client_id       = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Platform Configuration 
+environment     = "dev"
+location        = "southafricanorth"
