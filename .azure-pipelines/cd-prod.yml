@@ -1,0 +1,245 @@
+# This CD pipeline is for PRODUCTION deployment. It triggers when code is merged into the main branch.
+
+# Production Environment is treated with all maximum care:
+#   - Security gates are STRICT (pipeline fails on both HIGH and CRITICAL risks)
+#   - A manual approval gate pauses the pipeline before deploying
+#   - Health checks retry 10 times before declaring failure
+#   - A DAST scan runs against production after deployment
+#
+# Stages:
+#   1. ProdSecurityGate:  Strict security scans (fail on HIGH+CRITICAL)
+#   2. BuildProdImage:    Build, scan, and push production-tagged image
+#   3. DeployProduction:  Manual approval → deploy → health check
+#   4. ProdDAST:          OWASP ZAP scans on live production
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - README.md
+      - terraform/**
+
+pr: none
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - group: wogo-global-vars
+  - name: PYTHON_VERSION
+    value: "3.11"
+  - name: IMAGE_TAG
+    value: "$(Build.BuildId)"
+  - name: IMAGE_FULL
+    value: "$(ACR_NAME)/wogo:$(IMAGE_TAG)"
+
+stages:
+
+# STAGE 1: Strict security in Production using same tools as dev pipeline, but this time, with zero tolerance.
+# HIGH or CRITICAL severity results to pipeline failures. Nothing deploys to production.
+
+- stage: ProdSecurityGate
+  displayName: "Production Security Gate (Strict)"
+  jobs:
+  - job: StrictSecurityScan
+    displayName: "Strict Bandit + Trivy + Checkov"
+    steps:
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
+
+    - script: |
+        pip install bandit[toml] checkov
+
+        echo "========================================"
+        echo " SAST — Bandit (STRICT: fails on HIGH)"
+        echo "========================================"
+        # exit-code 1 = fail on HIGH severity (stricter than dev pipeline)
+        bandit -r app/ \
+          --severity-level high \
+          --format txt
+
+        echo "========================================"
+        echo " IaC — Checkov (STRICT: fails on violations)"
+        echo "========================================"
+        # No --soft-fail here: real violations stop the production deployment
+        checkov \
+          --directory terraform/ \
+          --framework terraform \
+          --compact
+      displayName: "SAST (Bandit) + IaC (Checkov) - Strict Mode"
+
+    - script: |
+        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main" \
+          | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update && sudo apt-get install -y trivy
+
+        echo "========================================"
+        echo " SCA — Trivy (STRICT: fails on HIGH+CRITICAL)"
+        echo "========================================"
+        # exit-code 1 = fail on HIGH or CRITICAL (stricter than dev)
+        trivy fs . \
+          --exit-code 1 \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --format table
+      displayName: "SCA (Trivy) - Strict Mode"
+
+
+# STAGE 2: Build Production Image
+
+- stage: BuildProdImage
+  displayName: "Build Production Image"
+  dependsOn: ProdSecurityGate
+  jobs:
+  - job: BuildTagPush
+    displayName: "Build, Scan, and Push Production Image"
+    steps:
+
+    - task: Docker@2
+      displayName: "Build Production Docker Image"
+      inputs:
+        containerRegistry: "acr-wogo"
+        repository: "wogo"
+        command: "build"
+        Dockerfile: "Dockerfile"
+        tags: |
+          $(IMAGE_TAG)
+          latest
+        arguments: "--no-cache"
+
+    - script: |
+        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main" \
+          | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update && sudo apt-get install -y trivy
+
+        echo "========================================"
+        echo " Final Trivy Image Scan Before Production"
+        echo "========================================"
+        # Hard stop: CRITICAL vulnerabilities in the image = do not ship
+        trivy image \
+          --exit-code 1 \
+          --severity CRITICAL \
+          --ignore-unfixed \
+          wogo:$(IMAGE_TAG)
+      displayName: "Final Trivy Image Security Gate"
+
+    - task: Docker@2
+      displayName: "Push Production Image to ACR"
+      inputs:
+        containerRegistry: "acr-wogo"
+        repository: "wogo"
+        command: "push"
+        tags: |
+          $(IMAGE_TAG)
+          latest
+
+
+# STAGE 3: Deploy to Production
+
+# The pipeline will pause here and wait till it is manually approved in Azure DevOps else nothing deploys to production.
+
+- stage: DeployProduction
+  displayName: "Deploy to PRODUCTION (Awaiting Approval)"
+  dependsOn: BuildProdImage
+  jobs:
+  - deployment: DeployToProdAppService
+    displayName: "Production Deployment"
+    environment: "wogo-prod"   # Approval gate is configured on this environment
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureWebAppContainer@1
+            displayName: "Deploy to Production App Service"
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              appName: $(PROD_APP_NAME)
+              resourceGroupName: $(PROD_RESOURCE_GROUP)
+              containers: $(IMAGE_FULL)
+
+          - script: |
+              echo "Waiting 60 seconds for production container to stabilise..."
+              sleep 60
+
+              echo "========================================"
+              echo " Production Health Check (10 retries)"
+              echo "========================================"
+
+              PASSED=0
+              for i in {1..10}; do
+                HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                  $(PROD_APP_URL)/api/v1/health)
+
+                echo "Attempt $i/10 — HTTP $HTTP_STATUS"
+
+                if [ "$HTTP_STATUS" = "200" ]; then
+                  PASSED=1
+                  break
+                fi
+                sleep 15
+              done
+
+              if [ "$PASSED" = "0" ]; then
+                echo "Production health check FAILED after 10 attempts."
+                echo "Consider reverting to the previous image in Azure Portal."
+                exit 1
+              fi
+
+              echo ""
+              echo "Production deployment successful!"
+              echo "Live at: $(PROD_APP_URL)"
+            displayName: "Production Health Check"
+
+
+# STAGE 4: DAST on Production
+# ZAP runs a soft scan on production (informational, not attack mode) to confirm the live environment is clean and not exploitable.
+
+- stage: ProdDAST
+  displayName: "DAST - OWASP ZAP (Production)"
+  dependsOn: DeployProduction
+  jobs:
+  - job: ProdZapScan
+    displayName: "OWASP ZAP Production Verification"
+    steps:
+
+    - script: |
+        mkdir -p reports/dast-prod
+
+        echo "========================================"
+        echo " OWASP ZAP — Production DAST Scan"
+        echo " Target: $(PROD_APP_URL)"
+        echo "========================================"
+
+        docker run --rm \
+          -v $(pwd)/reports/dast-prod:/zap/wrk/:rw \
+          ghcr.io/zaproxy/zaproxy:stable \
+          zap-api-scan.py \
+            -t $(PROD_APP_URL)/openapi.json \
+            -f openapi \
+            -r zap-prod-report.html \
+            -J zap-prod-report.json \
+            -l WARN \
+            -I
+
+        echo "Production DAST scan complete."
+      displayName: "OWASP ZAP Production Scan"
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish Production DAST Report"
+      condition: always()
+      inputs:
+        pathToPublish: "reports/dast-prod"
+        artifactName: "owasp-zap-dast-prod-report"

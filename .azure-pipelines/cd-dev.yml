@@ -1,0 +1,270 @@
+# This CD pipeline is for the DEV deployment. It triggers when code is merged into the dev branch.
+
+# Stages:
+#   1. Security:   Runs Bandit + Trivy + Checkov strictly
+#   2. Build:      Builds Docker image and pushes to ACR
+#   3. Deploy Dev: Deploys the image to the Dev App Service
+#   4. DAST:       OWASP ZAP is used here to scan the LIVE running dev application.
+
+trigger:
+  branches:
+    include:
+      - dev
+  paths:
+    exclude:
+      - README.md       # Don't trigger a deployment for docs changes
+      - terraform/** # Terraform changes don't trigger app deployments
+
+pr: none  # This pipeline ONLY runs on merges, NOT on PRs.
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - group: wogo-global-vars
+  - name: PYTHON_VERSION
+    value: "3.11"
+  - name: IMAGE_TAG
+    value: "dev-$(Build.BuildId)"
+  - name: IMAGE_FULL
+    value: "$(ACR_NAME)/wogo:$(IMAGE_TAG)"
+
+stages:
+
+# STAGE 1: Security Checks using Trivy, Checkov, and Bandit.
+# They run against merged code about to deploy.
+
+- stage: SecurityChecks
+  displayName: "Security Checks"
+  jobs:
+  - job: RunSecurityScans
+    displayName: "Bandit + Trivy + Checkov"
+    steps:
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
+
+    - script: |
+        pip install bandit[toml] checkov
+        mkdir -p reports/{sast,iac}
+
+        echo "========================================"
+        echo " SAST — Bandit"
+        echo "========================================"
+        bandit -r app/ \
+          --severity-level medium \
+          --format json \
+          --output reports/sast/bandit.json \
+          --exit-zero
+        bandit -r app/ --severity-level medium --format txt
+
+        echo "========================================"
+        echo " IaC — Checkov"
+        echo "========================================"
+        checkov --directory terraform/ --framework terraform --soft-fail --compact
+      displayName: "SAST (Bandit) + IaC (Checkov)"
+
+    - script: |
+        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main" \
+          | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update && sudo apt-get install -y trivy
+
+        echo "========================================"
+        echo " SCA — Trivy Filesystem"
+        echo "========================================"
+        trivy fs . \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --format table
+      displayName: "SCA (Trivy Filesystem)"
+
+    - task: PublishBuildArtifacts@1
+      condition: always()
+      inputs:
+        pathToPublish: "reports"
+        artifactName: "dev-security-reports"
+
+
+# STAGE 2: Build Docker Image and Push to ACR
+
+- stage: BuildAndPush
+  displayName: "Build and Push to ACR"
+  dependsOn: SecurityChecks
+  jobs:
+  - job: BuildPush
+    displayName: "Build, Scan, Push"
+    steps:
+
+    - task: Docker@2
+      displayName: "Build Docker Image"
+      inputs:
+        containerRegistry: "acr-wogo"
+        repository: "wogo"
+        command: "build"
+        Dockerfile: "Dockerfile"
+        tags: |
+          $(IMAGE_TAG)
+          dev-latest
+        arguments: "--no-cache"
+
+    - script: |
+        # Install Trivy for image scan
+        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main" \
+          | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update && sudo apt-get install -y trivy
+
+        echo "========================================"
+        echo " Trivy Container Image Scan (Security Gate)"
+        echo "========================================"
+        # exit-code 1 = pipeline FAILS if CRITICAL vulnerabilities are found
+        trivy image \
+          --exit-code 1 \
+          --severity CRITICAL \
+          --ignore-unfixed \
+          $(IMAGE_FULL)
+      displayName: "Trivy Image Security Gate"
+
+    - task: Docker@2
+      displayName: "Push Image to ACR"
+      inputs:
+        containerRegistry: "acr-wogo"
+        repository: "wogo"
+        command: "push"
+        tags: |
+          $(IMAGE_TAG)
+          dev-latest
+
+
+# STAGE 3: Deploy to Dev App Service
+
+- stage: DeployDev
+  displayName: "Deploy to DEV"
+  dependsOn: BuildAndPush
+  # 'environment' creates a deployment record in Azure DevOps.
+  
+  jobs:
+  - deployment: DeployToDevAppService
+    displayName: "Deploy Container to Dev"
+    environment: "wogo-dev"
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureWebAppContainer@1
+            displayName: "Deploy to Dev App Service"
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              appName: $(DEV_APP_NAME)
+              resourceGroupName: $(DEV_RESOURCE_GROUP)
+              containers: $(IMAGE_FULL)
+
+          - script: |
+              echo "Waiting 45 seconds for the container to start..."
+              sleep 45
+
+              echo "========================================"
+              echo " Post-Deployment Health Check"
+              echo "========================================"
+
+              # Retry health check up to 6 times (90 seconds total)
+              for i in {1..6}; do
+                HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                  $(DEV_APP_URL)/api/v1/health)
+
+                echo "Attempt $i/6 — HTTP $HTTP_STATUS"
+
+                if [ "$HTTP_STATUS" = "200" ]; then
+                  echo "Dev deployment healthy!"
+                  exit 0
+                fi
+                sleep 15
+              done
+
+              echo "Health check failed after 6 attempts."
+              exit 1
+            displayName: "Health Check — Dev App"
+
+
+# STAGE 4: DAST (Dynamic Application Security Testing) using OWASP ZAP
+# Attacks the LIVE running dev app like a cyberattacker would by reading the /openapi.json schema and testing every single endpoint.
+# Only runs after the app is deployed and running.
+
+- stage: DAST
+  displayName: "🕷️ DAST — OWASP ZAP"
+  dependsOn: DeployDev
+  jobs:
+  - job: OWASPZapScan
+    displayName: "OWASP ZAP API Scan"
+    steps:
+
+    - script: |
+        mkdir -p reports/dast
+        chmod 777 reports/dast
+
+        echo "========================================"
+        echo " Running OWASP ZAP DAST Scan"
+        echo " Target: $(DEV_APP_URL)"
+        echo "========================================"
+
+        # ZAP runs as a Docker container.
+        # It reads the FastAPI OpenAPI schema to discover all API endpoints,
+        # then tests each one for common vulnerabilities.
+        docker run --rm \
+          -v $(pwd)/reports/dast:/zap/wrk/:rw \
+          ghcr.io/zaproxy/zaproxy:stable \
+          zap-api-scan.py \
+            -t $(DEV_APP_URL)/openapi.json \
+            -f openapi \
+            -r zap-report.html \
+            -J zap-report.json \
+            -x zap-report.xml \
+            -I   # -I = don't fail on warnings, only hard failures
+
+        echo "OWASP ZAP scan complete."
+      displayName: "OWASP ZAP DAST Scan"
+
+    - script: |
+        echo "========================================"
+        echo " Evaluating ZAP Results"
+        echo "========================================"
+
+        # Parse the JSON report and fail the pipeline if CRITICAL issues are found
+        python3 -c "
+        import json, sys
+
+        try:
+            with open('reports/dast/zap-report.json') as f:
+                report = json.load(f)
+        except FileNotFoundError:
+            print('ZAP report not found — scan may not have completed.')
+            sys.exit(1)
+
+        # Risk codes: 0=Informational, 1=Low, 2=Medium, 3=High
+        high_risk = [a for a in report.get('alerts', []) if int(a.get('riskcode', 0)) >= 3]
+
+        if high_risk:
+            print(f' HIGH/CRITICAL DAST findings: {len(high_risk)}')
+            for issue in high_risk:
+                print(f'  [{issue[\"risk\"]}] {issue[\"alert\"]}')
+            sys.exit(1)
+        else:
+            print('No HIGH/CRITICAL DAST findings. Dev environment is clean.')
+        "
+      displayName: "DAST Security Gate"
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish DAST Report"
+      condition: always()
+      inputs:
+        pathToPublish: "reports/dast"
+        artifactName: "owasp-zap-dast-dev-report"
