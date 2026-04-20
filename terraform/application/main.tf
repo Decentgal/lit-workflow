@@ -52,6 +52,7 @@ resource "azurerm_linux_web_app" "dev" {
   site_config {
     always_on         = false
     health_check_path = "/api/v1/health"
+    container_registry_use_managed_identity = true
 
     application_stack {
       docker_image_name   = "${azurerm_container_registry.acr.login_server}/wogo:dev-latest"
