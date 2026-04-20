@@ -130,7 +130,7 @@ stages:
           --exit-code 1 \
           --severity CRITICAL \
           --ignore-unfixed \
-          $(IMAGE_TAG)
+          $(IMAGE_FULL)
       displayName: "Trivy Image Security Gate"
 
     - task: Docker@2
