@@ -238,24 +238,18 @@ stages:
     displayName: "Build Docker Image and Scan"
     steps:
 
-    - task: Docker@2
-      displayName: "Build Docker Image"
-      inputs:
-        containerRegistry: "acr-wogo"
-        repository: "wogo"
-        command: "build"
-        Dockerfile: "Dockerfile"
-        tags: $(IMAGE_TAG)
-        arguments: "--no-cache"
-
     - script: |
-        # Install Trivy
+        echo "========================================"
+        echo " Building WOGO Docker Image"
+        echo "========================================"
+        docker build -t wogo:$(IMAGE_TAG) .
+      displayName: "Build Docker Image"
+
+    
+    - script: |
         sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-          | sudo apt-key add -
-        echo "deb https://aquasecurity.github.io/trivy-repo/deb \
-          $(lsb_release -sc) main" \
-          | sudo tee /etc/apt/sources.list.d/trivy.list
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
         sudo apt-get update && sudo apt-get install -y trivy
 
         mkdir -p reports/container-scan
@@ -264,7 +258,6 @@ stages:
         echo " Running Trivy Container Image Scan"
         echo "========================================"
 
-        # Scan the local tag
         trivy image \
           --severity HIGH,CRITICAL \
           --ignore-unfixed \
@@ -273,7 +266,6 @@ stages:
           --exit-code 0 \
           wogo:$(IMAGE_TAG)
 
-        # Table output for logs
         trivy image \
           --severity HIGH,CRITICAL \
           --ignore-unfixed \
