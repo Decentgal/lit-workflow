@@ -281,7 +281,7 @@ Go to App Service Plan (wogo-dev-asp)  → click Scale up (App Service plan) on 
 
 You'd likely face some restrictions on role assignments (Resource Policy Contributor role) of the Azure Policy deny guardrail for PostgreSQL and ACRPull permissions for both App Services at the subscription scope. 
 
-**Solution:** Manually assign it or do so via the Azure portal.
+**Solution:** Manually assign it or do so via Azure portal.
 
 **In a Pay-As-You-Go subscription account, there are no limitations.**
 
