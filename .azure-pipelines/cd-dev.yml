@@ -209,6 +209,7 @@ stages:
 
     - script: |
         mkdir -p reports/dast
+        chmod 777 reports/dast
 
         echo "========================================"
         echo " Running OWASP ZAP DAST Scan"
