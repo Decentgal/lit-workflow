@@ -13,7 +13,7 @@ trigger:
   paths:
     exclude:
       - README.md       # Don't trigger a deployment for docs changes
-      - terraform/**    # Terraform changes don't trigger app deployments
+      - terraform/** # Terraform changes don't trigger app deployments
 
 pr: none  # This pipeline ONLY runs on merges, NOT on PRs.
 
@@ -239,26 +239,26 @@ stages:
 
         # Parse the JSON report and fail the pipeline if CRITICAL issues are found
         python3 -c "
-import json, sys
+        import json, sys
 
-try:
-    with open('reports/dast/zap-report.json') as f:
-        report = json.load(f)
-except FileNotFoundError:
-    print('ZAP report not found — scan may not have completed.')
-    sys.exit(1)
+        try:
+            with open('reports/dast/zap-report.json') as f:
+                report = json.load(f)
+        except FileNotFoundError:
+            print('ZAP report not found — scan may not have completed.')
+            sys.exit(1)
 
-# Risk codes: 0=Informational, 1=Low, 2=Medium, 3=High
-high_risk = [a for a in report.get('alerts', []) if int(a.get('riskcode', 0)) >= 3]
+        # Risk codes: 0=Informational, 1=Low, 2=Medium, 3=High
+        high_risk = [a for a in report.get('alerts', []) if int(a.get('riskcode', 0)) >= 3]
 
-if high_risk:
-    print(f' HIGH/CRITICAL DAST findings: {len(high_risk)}')
-    for issue in high_risk:
-        print(f'  [{issue[\"risk\"]}] {issue[\"alert\"]}')
-    sys.exit(1)
-else:
-    print('No HIGH/CRITICAL DAST findings. Dev environment is clean.')
-"
+        if high_risk:
+            print(f' HIGH/CRITICAL DAST findings: {len(high_risk)}')
+            for issue in high_risk:
+                print(f'  [{issue[\"risk\"]}] {issue[\"alert\"]}')
+            sys.exit(1)
+        else:
+            print('No HIGH/CRITICAL DAST findings. Dev environment is clean.')
+        "
       displayName: "DAST Security Gate"
 
     - task: PublishBuildArtifacts@1
